@@ -43,3 +43,19 @@ func TestHelpDocumentsEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestHelpDocumentsTerminalOnlyOutput(t *testing.T) {
+	for _, want := range []string{
+		"stdout: reserved for help text only.",
+		"stderr: runtime logs use the standard log-line format with the \"voiced:\" prefix.",
+	} {
+		if !strings.Contains(VoicedHelp, want) {
+			t.Fatalf("help missing output contract %q:\n%s", want, VoicedHelp)
+		}
+	}
+	for _, forbidden := range []string{"schemas", "schema id", "spec/outputs"} {
+		if strings.Contains(strings.ToLower(VoicedHelp), forbidden) {
+			t.Fatalf("help implies schema-backed output with %q:\n%s", forbidden, VoicedHelp)
+		}
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +35,50 @@ func TestBridgeCreatesSessionByVoiceReceptionistTitleAndReplies(t *testing.T) {
 	}
 	if got := oc.promptSessions(); len(got) != 1 || got[0] != "ses-1" {
 		t.Fatalf("prompt sessions=%v", got)
+	}
+}
+
+func TestBridgePrependsReceptionistContextToPrompt(t *testing.T) {
+	stateDir := t.TempDir()
+	oc := newFakeOpencode("ses-1")
+	bridge := testBridge(stateDir, oc)
+
+	_, err := bridge.HandleTurn(context.Background(), TurnRequest{
+		CallSid:      "CA123",
+		CallerNumber: "+15550001",
+		Transcript:   "I need a human",
+		ReceptionistContext: &ReceptionistContext{
+			InsideBusinessHours: false,
+			AfterHoursBehavior:  "escalation_context",
+			Greeting:            "Thanks for calling Example Co.",
+			Escalation: ReceptionistEscalation{
+				Enabled:      true,
+				Label:        "Front desk",
+				PhoneE164:    "+15551234567",
+				Instructions: "Collect a callback number.",
+			},
+			HandoffActionInstructions: "Use voiceHandoffAction JSON only.",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := oc.promptTexts()
+	if len(prompts) != 1 {
+		t.Fatalf("prompts=%v", prompts)
+	}
+	for _, want := range []string{
+		"Receptionist context:",
+		"Business is currently closed.",
+		"After-hours behavior: escalation_context.",
+		"Configured greeting: Thanks for calling Example Co.",
+		"Escalation phone target: +15551234567.",
+		"Handoff action instructions:\nUse voiceHandoffAction JSON only.",
+		"Caller said:\nI need a human",
+	} {
+		if !strings.Contains(prompts[0], want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompts[0])
+		}
 	}
 }
 
@@ -262,6 +307,16 @@ func (f *fakeOpencode) promptSessions() []string {
 		sessions = append(sessions, prompt.sessionID)
 	}
 	return sessions
+}
+
+func (f *fakeOpencode) promptTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	texts := make([]string, 0, len(f.prompts))
+	for _, prompt := range f.prompts {
+		texts = append(texts, prompt.text)
+	}
+	return texts
 }
 
 func readJSON(t *testing.T, path string, out any) {

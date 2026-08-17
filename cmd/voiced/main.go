@@ -12,6 +12,12 @@ import (
 )
 
 func main() {
+	for _, arg := range os.Args[1:] {
+		if arg == "--json" || len(arg) >= len("--json=") && arg[:len("--json=")] == "--json=" {
+			fmt.Fprintln(os.Stderr, "Error: --json is not supported; voiced emits terminal help and log output only")
+			os.Exit(1)
+		}
+	}
 	if cli.WantsHelp(os.Args[1:]) {
 		fmt.Fprint(os.Stdout, cli.VoicedHelp)
 		return

@@ -29,9 +29,25 @@ type opencodeClient interface {
 }
 
 type TurnRequest struct {
-	CallSid      string `json:"callSid"`
-	CallerNumber string `json:"callerNumber,omitempty"`
-	Transcript   string `json:"transcript"`
+	CallSid             string               `json:"callSid"`
+	CallerNumber        string               `json:"callerNumber,omitempty"`
+	Transcript          string               `json:"transcript"`
+	ReceptionistContext *ReceptionistContext `json:"receptionistContext,omitempty"`
+}
+
+type ReceptionistContext struct {
+	InsideBusinessHours       bool                   `json:"insideBusinessHours"`
+	AfterHoursBehavior        string                 `json:"afterHoursBehavior"`
+	Greeting                  string                 `json:"greeting,omitempty"`
+	Escalation                ReceptionistEscalation `json:"escalation,omitempty"`
+	HandoffActionInstructions string                 `json:"handoffActionInstructions,omitempty"`
+}
+
+type ReceptionistEscalation struct {
+	Enabled      bool   `json:"enabled"`
+	Label        string `json:"label,omitempty"`
+	PhoneE164    string `json:"phoneE164,omitempty"`
+	Instructions string `json:"instructions,omitempty"`
 }
 
 type TurnResponse struct {
@@ -188,12 +204,13 @@ func (b *Bridge) HandleTurn(ctx context.Context, req TurnRequest) (TurnResponse,
 		b.logOnlyError("create opencode session", err)
 		return TurnResponse{ReplyText: fallbackReply}, nil
 	}
-	response, err := b.opencode.Prompt(ctx, sessionID, req.Transcript)
+	promptText := buildPromptText(req)
+	response, err := b.opencode.Prompt(ctx, sessionID, promptText)
 	if opencode.IsStaleSession(err) {
 		b.logger.Printf("recreating stale opencode session call_sid=%s", req.CallSid)
 		sessionID, err = b.recreateSession(ctx, req.CallSid)
 		if err == nil {
-			response, err = b.opencode.Prompt(ctx, sessionID, req.Transcript)
+			response, err = b.opencode.Prompt(ctx, sessionID, promptText)
 		}
 	}
 	if err != nil {
@@ -210,6 +227,44 @@ func (b *Bridge) HandleTurn(ctx context.Context, req TurnRequest) (TurnResponse,
 	b.mu.Unlock()
 	b.flushStatus()
 	return TurnResponse{ReplyText: strings.TrimSpace(response.Text)}, nil
+}
+
+func buildPromptText(req TurnRequest) string {
+	if req.ReceptionistContext == nil {
+		return req.Transcript
+	}
+	ctx := req.ReceptionistContext
+	businessState := "closed"
+	if ctx.InsideBusinessHours {
+		businessState = "open"
+	}
+	var lines []string
+	lines = append(lines, "Receptionist context:")
+	lines = append(lines, fmt.Sprintf("- Business is currently %s.", businessState))
+	if strings.TrimSpace(ctx.AfterHoursBehavior) != "" {
+		lines = append(lines, fmt.Sprintf("- After-hours behavior: %s.", strings.TrimSpace(ctx.AfterHoursBehavior)))
+	}
+	if strings.TrimSpace(ctx.Greeting) != "" {
+		lines = append(lines, fmt.Sprintf("- Configured greeting: %s", strings.TrimSpace(ctx.Greeting)))
+	}
+	if ctx.Escalation.Enabled {
+		label := strings.TrimSpace(ctx.Escalation.Label)
+		if label == "" {
+			label = "human escalation"
+		}
+		lines = append(lines, fmt.Sprintf("- Escalation is enabled for %s.", label))
+		if phone := strings.TrimSpace(ctx.Escalation.PhoneE164); phone != "" {
+			lines = append(lines, fmt.Sprintf("- Escalation phone target: %s.", phone))
+		}
+		if instructions := strings.TrimSpace(ctx.Escalation.Instructions); instructions != "" {
+			lines = append(lines, "- Escalation instructions: "+instructions)
+		}
+	}
+	if instructions := strings.TrimSpace(ctx.HandoffActionInstructions); instructions != "" {
+		lines = append(lines, "", "Handoff action instructions:", instructions)
+	}
+	lines = append(lines, "", "Caller said:", req.Transcript)
+	return strings.Join(lines, "\n")
 }
 
 func (b *Bridge) sessionFor(ctx context.Context, callSid string) (string, error) {

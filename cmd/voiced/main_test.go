@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -25,29 +27,77 @@ func TestHelpAliasesProduceIdenticalStdout(t *testing.T) {
 	}
 }
 
+func TestJSONFlagRejectedWithTextError(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=TestVoicedMainHelper")
+	cmd.Env = append(os.Environ(), "VOICED_MAIN_HELPER=1", "VOICED_MAIN_ARGS=--json")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err == nil {
+		t.Fatal("expected --json to be rejected")
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q; want empty stdout", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--json is not supported") {
+		t.Fatalf("stderr = %q; want unsupported --json diagnostic", stderr.String())
+	}
+}
+
+func TestVoicedMainHelper(t *testing.T) {
+	if os.Getenv("VOICED_MAIN_HELPER") != "1" {
+		return
+	}
+	os.Args = append([]string{"voiced"}, strings.Fields(os.Getenv("VOICED_MAIN_ARGS"))...)
+	main()
+}
+
 func runMainForHelp(t *testing.T, arg string) string {
 	t.Helper()
 	oldArgs := os.Args
 	oldStdout := os.Stdout
-	reader, writer, err := os.Pipe()
+	oldStderr := os.Stderr
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrReader, stderrWriter, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	os.Args = []string{"voiced", arg}
-	os.Stdout = writer
+	os.Stdout = stdoutWriter
+	os.Stderr = stderrWriter
 	defer func() {
 		os.Args = oldArgs
 		os.Stdout = oldStdout
-		_ = reader.Close()
+		os.Stderr = oldStderr
+		_ = stdoutReader.Close()
+		_ = stderrReader.Close()
 	}()
 
 	main()
-	if err := writer.Close(); err != nil {
+	if err := stdoutWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
-	out, err := io.ReadAll(reader)
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(stdoutReader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	errOut, err := io.ReadAll(stderrReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(errOut) != "" {
+		t.Fatalf("stderr = %q; want empty stderr for help", string(errOut))
 	}
 	return string(out)
 }

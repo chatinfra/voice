@@ -184,17 +184,39 @@ func decodeEvent(data []byte) (opencodeEvent, bool, error) {
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return opencodeEvent{}, false, fmt.Errorf("decode opencode event: %w", err)
 	}
+	if payload, ok := objectValue(obj["payload"]); ok {
+		if syncEvent, ok := objectValue(payload["syncEvent"]); ok {
+			obj = syncEvent
+		}
+	}
 	if nested, ok := objectValue(obj["data"]); ok {
 		if _, hasType := obj["type"]; !hasType {
 			obj = nested
 		}
 	}
 	typeValue, _ := stringValue(obj["type"])
+	typeValue = normalizeEventType(typeValue)
 	properties, _ := objectValue(obj["properties"])
+	if properties == nil {
+		properties, _ = objectValue(obj["data"])
+	}
 	if properties == nil {
 		properties = map[string]any{}
 	}
 	return opencodeEvent{Type: typeValue, Properties: properties}, true, nil
+}
+
+func normalizeEventType(eventType string) string {
+	dot := strings.LastIndex(eventType, ".")
+	if dot < 0 || dot == len(eventType)-1 {
+		return eventType
+	}
+	for _, ch := range eventType[dot+1:] {
+		if ch < '0' || ch > '9' {
+			return eventType
+		}
+	}
+	return eventType[:dot]
 }
 
 func (e opencodeEvent) matchesSession(sessionID string) bool {

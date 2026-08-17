@@ -63,6 +63,48 @@ func TestResponseStateTerminalEmptyTextIsError(t *testing.T) {
 	}
 }
 
+func TestDecodeEventSyncEnvelopeMessageUpdated(t *testing.T) {
+	response := observeResponse(t, "ses-sync", []string{
+		`{"directory":"/repo","project":"global","payload":{"type":"sync","syncEvent":{"type":"message.updated.1","seq":89,"aggregateID":"ses-sync","data":{"sessionID":"ses-sync","info":{"id":"msg-sync","sessionID":"ses-sync","role":"assistant","finish":"stop","content":[{"type":"text","text":"sync complete"}],"time":{"created":1,"completed":2}}}}}}`,
+	})
+
+	if response.SessionID != "ses-sync" || response.MessageID != "msg-sync" || response.Text != "sync complete" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestDecodeEventSyncEnvelopePartUpdated(t *testing.T) {
+	response := observeResponse(t, "ses-sync", []string{
+		`{"payload":{"type":"sync","syncEvent":{"type":"message.part.updated.1","data":{"sessionID":"ses-sync","part":{"id":"part-1","sessionID":"ses-sync","messageID":"msg-sync","type":"text","text":"part text"}}}}}`,
+		`{"payload":{"type":"sync","syncEvent":{"type":"message.updated.1","data":{"sessionID":"ses-sync","info":{"id":"msg-sync","sessionID":"ses-sync","role":"assistant","finish":"stop","time":{"created":1,"completed":2}}}}}}`,
+	})
+
+	if response.MessageID != "msg-sync" || response.Text != "part text" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestDecodeEventSyncEnvelopeSessionScoping(t *testing.T) {
+	state := newResponseState("ses-active")
+	response, done, err := state.Observe([]byte(`{"payload":{"type":"sync","syncEvent":{"type":"message.updated.1","data":{"sessionID":"ses-other","info":{"id":"msg-other","sessionID":"ses-other","role":"assistant","finish":"stop","content":[{"type":"text","text":"wrong session"}],"time":{"created":1,"completed":2}}}}}}`))
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if done || response.Text != "" {
+		t.Fatalf("Observe completed for wrong session: done=%v response=%+v", done, response)
+	}
+}
+
+func TestDecodeEventLegacyEnvelopeStillDecodes(t *testing.T) {
+	response := observeResponse(t, "ses-legacy", []string{
+		`{"type":"message.updated","properties":{"sessionID":"ses-legacy","info":{"id":"msg-legacy","sessionID":"ses-legacy","role":"assistant","finish":"stop","content":[{"type":"text","text":"legacy complete"}],"time":{"created":1,"completed":2}}}}`,
+	})
+
+	if response.SessionID != "ses-legacy" || response.MessageID != "msg-legacy" || response.Text != "legacy complete" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
 func observeResponse(t *testing.T, sessionID string, events []string) AssistantResponse {
 	t.Helper()
 	state := newResponseState(sessionID)
