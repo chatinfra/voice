@@ -12,7 +12,8 @@ ENVIRONMENT
   OPENCODE_AGENT_ID          agent identifier (or AGENT_ID)
   OPENCODE_AGENT_NAME        opencode agent name (or AGENT_NAME)
   VOICED_STATE_DIR           directory for calls.json and status.json
-  VOICED_TURN_ADDR           loopback turn endpoint address (default 127.0.0.1:0)
+  VOICED_TURN_SOCKET         required Linux Unix socket path (root peers only)
+  VOICED_RUNTIME_ID          required runtime audience identifier
   VOICE_NUMBER_E164          bound voice number in E.164 format
   OPENCODE_PROMPT_TIMEOUT    prompt timeout as a Go duration
 
@@ -21,7 +22,7 @@ OUTPUT
   stderr: runtime logs use the standard log-line format with the "voiced:" prefix.
 
 EXAMPLES
-  OPENCODE_BASE_URL=http://127.0.0.1:4096 OPENCODE_DIRECTORY=$PWD OPENCODE_AGENT_ID=agent-1 OPENCODE_AGENT_NAME=receptionist VOICED_STATE_DIR=.state/voiced voiced
+  OPENCODE_BASE_URL=http://127.0.0.1:4096 OPENCODE_DIRECTORY=$PWD OPENCODE_AGENT_ID=agent-1 OPENCODE_AGENT_NAME=receptionist VOICED_STATE_DIR=.state/voiced VOICED_RUNTIME_ID=runtime-1 VOICED_TURN_SOCKET=/run/chatinfra-voice/1001/agent.sock voiced
 `
 
 func WantsHelp(args []string) bool {

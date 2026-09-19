@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -29,6 +28,8 @@ type opencodeClient interface {
 }
 
 type TurnRequest struct {
+	RuntimeID           string               `json:"runtimeId"`
+	AgentID             string               `json:"agentId"`
 	CallSid             string               `json:"callSid"`
 	CallerNumber        string               `json:"callerNumber,omitempty"`
 	Transcript          string               `json:"transcript"`
@@ -103,11 +104,13 @@ func (b *Bridge) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load calls: %w", err)
 	}
-	listener, err := net.Listen("tcp", b.cfg.ListenAddr)
+	listener, err := listenTurnSocket(b.cfg.TurnSocket)
 	if err != nil {
 		b.recordError(fmt.Errorf("listen turn endpoint: %w", err))
 		return err
 	}
+	defer listener.Close()
+	defer b.setReady(false)
 	actualAddr := listener.Addr().String()
 	b.mu.Lock()
 	b.calls = calls
@@ -118,7 +121,8 @@ func (b *Bridge) Run(ctx context.Context) error {
 	b.mu.Unlock()
 	b.flushStatus()
 
-	server := &http.Server{Handler: b.routes()}
+	server := &http.Server{Handler: b.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second}
+	defer server.Close()
 	serveErr := make(chan error, 1)
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -185,6 +189,9 @@ func (b *Bridge) handleHealthHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *Bridge) HandleTurn(ctx context.Context, req TurnRequest) (TurnResponse, error) {
+	if req.RuntimeID == "" || req.RuntimeID != b.cfg.RuntimeID || req.AgentID == "" || req.AgentID != b.cfg.AgentID {
+		return TurnResponse{}, errors.New("turn audience mismatch")
+	}
 	req.CallSid = strings.TrimSpace(req.CallSid)
 	req.Transcript = strings.TrimSpace(req.Transcript)
 	if req.CallSid == "" {

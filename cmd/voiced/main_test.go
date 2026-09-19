@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVoicedHelpHasSections(t *testing.T) {
@@ -109,4 +112,70 @@ func hasHelpHeader(text, header string) bool {
 		}
 	}
 	return false
+}
+
+func TestVoicedRejectsInvalidSocketConfiguration(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, socket := range []string{"", "127.0.0.1:1234", "/run/../turn.sock", "/" + strings.Repeat("x", 108)} {
+		cmd := exec.Command(exe, "-test.run=^TestVoicedMainHelper$")
+		cmd.Env = []string{"VOICED_MAIN_HELPER=1", "OPENCODE_BASE_URL=http://127.0.0.1:1", "OPENCODE_DIRECTORY=/repo", "OPENCODE_AGENT_ID=agent-1", "OPENCODE_AGENT_NAME=Ada", "VOICE_NUMBER_E164=+15551234567", "VOICED_STATE_DIR=" + t.TempDir(), "VOICED_RUNTIME_ID=runtime-1", "VOICED_TURN_ADDR=127.0.0.1:1234", "VOICED_TURN_SOCKET=" + socket}
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("accepted socket %q", socket)
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), "VOICED_TURN_SOCKET") {
+			t.Fatalf("invalid CLI failure: stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+	}
+}
+
+// WASI executes the real non-Linux startup path without a test-only platform override.
+func TestVoicedUnsupportedPlatformFailsClosed(t *testing.T) {
+	if os.Getenv("TMPDIR") == "" {
+		t.Fatal("TMPDIR must name lane-owned scratch")
+	}
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "voiced.wasm")
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	build := exec.CommandContext(ctx, "go", "build", "-o", binary, ".")
+	build.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build unsupported target: %v\n%s", err, out)
+	}
+	state := filepath.Join(dir, "state")
+	if err := os.Mkdir(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := `
+ const {WASI} = require('node:wasi');
+ const fs = require('node:fs');
+ const wasi = new WASI({version:'preview1', returnOnExit:true, args:['voiced'], env:{
+ OPENCODE_BASE_URL:'http://127.0.0.1:1', OPENCODE_DIRECTORY:'/repo',
+ OPENCODE_AGENT_ID:'agent-1', OPENCODE_AGENT_NAME:'Ada', VOICE_NUMBER_E164:'+15551234567',
+ VOICED_STATE_DIR:'/state', VOICED_TURN_SOCKET:'/state/turn.sock', VOICED_RUNTIME_ID:'runtime-1'
+ },preopens:{'/state':process.argv[2]}});
+ const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+ const instance = new WebAssembly.Instance(module,{wasi_snapshot_preview1:wasi.wasiImport});
+ process.exitCode = wasi.start(instance);
+ `
+	cmd := exec.CommandContext(ctx, "node", "--no-warnings", "-e", script, binary, state)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("unsupported platform started successfully")
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "configuration error: Unix peer authentication requires Linux") {
+		t.Fatalf("unsupported startup: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	files, err := os.ReadDir(state)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("unsupported platform created runtime state: %v %v", files, err)
+	}
 }

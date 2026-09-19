@@ -23,7 +23,7 @@ func TestBridgeCreatesSessionByVoiceReceptionistTitleAndReplies(t *testing.T) {
 	oc := newFakeOpencode("ses-1")
 	bridge := testBridge(stateDir, oc)
 
-	resp, err := bridge.HandleTurn(context.Background(), TurnRequest{CallSid: "CA123", CallerNumber: "+15550001", Transcript: "hello"})
+	resp, err := bridge.HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1", CallSid: "CA123", CallerNumber: "+15550001", Transcript: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestBridgePrependsReceptionistContextToPrompt(t *testing.T) {
 	oc := newFakeOpencode("ses-1")
 	bridge := testBridge(stateDir, oc)
 
-	_, err := bridge.HandleTurn(context.Background(), TurnRequest{
+	_, err := bridge.HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1",
 		CallSid:      "CA123",
 		CallerNumber: "+15550001",
 		Transcript:   "I need a human",
@@ -85,7 +85,7 @@ func TestBridgePrependsReceptionistContextToPrompt(t *testing.T) {
 func TestBridgeReusesCallSessionFromCallsFileAcrossRestart(t *testing.T) {
 	stateDir := t.TempDir()
 	first := newFakeOpencode("ses-1")
-	if _, err := testBridge(stateDir, first).HandleTurn(context.Background(), TurnRequest{CallSid: "CA123", Transcript: "hello"}); err != nil {
+	if _, err := testBridge(stateDir, first).HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1", CallSid: "CA123", Transcript: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	var calls CallsFile
@@ -95,7 +95,7 @@ func TestBridgeReusesCallSessionFromCallsFileAcrossRestart(t *testing.T) {
 	}
 
 	second := newFakeOpencode()
-	if _, err := testBridge(stateDir, second).HandleTurn(context.Background(), TurnRequest{CallSid: "CA123", Transcript: "again"}); err != nil {
+	if _, err := testBridge(stateDir, second).HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1", CallSid: "CA123", Transcript: "again"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(second.createTitles()) != 0 {
@@ -112,7 +112,7 @@ func TestBridgeFindsExistingSessionByTitleForNewCall(t *testing.T) {
 	oc.existingByTitle["Voice Receptionist: Ada (agent-1)"] = "ses-existing"
 	bridge := testBridge(stateDir, oc)
 
-	if _, err := bridge.HandleTurn(context.Background(), TurnRequest{CallSid: "CA999", Transcript: "hello"}); err != nil {
+	if _, err := bridge.HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1", CallSid: "CA999", Transcript: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(oc.createTitles()) != 0 {
@@ -135,7 +135,7 @@ func TestBridgeRecreatesRejectedSession(t *testing.T) {
 		}
 		return opencode.AssistantResponse{SessionID: sessionID, Text: "fresh"}, nil
 	}
-	resp, err := testBridge(stateDir, oc).HandleTurn(context.Background(), TurnRequest{CallSid: "CA123", Transcript: "hello"})
+	resp, err := testBridge(stateDir, oc).HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1", CallSid: "CA123", Transcript: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestBridgeReturnsFallbackAndUpdatesStatusOnPromptFailure(t *testing.T) {
 	}
 	var logs bytes.Buffer
 	bridge := NewBridgeWithClient(testConfig(stateDir), log.New(&logs, "", 0), oc)
-	resp, err := bridge.HandleTurn(context.Background(), TurnRequest{CallSid: "CA123", Transcript: "hello"})
+	resp, err := bridge.HandleTurn(context.Background(), TurnRequest{RuntimeID: "runtime-1", AgentID: "agent-1", CallSid: "CA123", Transcript: "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,10 @@ func TestBridgeReturnsFallbackAndUpdatesStatusOnPromptFailure(t *testing.T) {
 func TestBridgeRunServesTurnEndpointAndWritesHealth(t *testing.T) {
 	stateDir := t.TempDir()
 	cfg := testConfig(stateDir)
-	cfg.ListenAddr = "127.0.0.1:0"
+	if runInPeerContainer(t) {
+		return
+	}
+	cfg.TurnSocket = socketTestPath(t)
 	oc := newFakeOpencode("ses-1")
 	bridge := NewBridgeWithClient(cfg, log.New(&bytes.Buffer{}, "", 0), oc)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -193,8 +196,8 @@ func TestBridgeRunServesTurnEndpointAndWritesHealth(t *testing.T) {
 		return status.TurnEndpointReady && status.ListenAddress != ""
 	})
 
-	body := bytes.NewBufferString(`{"callSid":"CA123","callerNumber":"+15550001","transcript":"hello"}`)
-	resp, err := http.Post("http://"+status.ListenAddress+"/turn", "application/json", body)
+	body := bytes.NewBufferString(`{"runtimeId":"runtime-1","agentId":"agent-1","callSid":"CA123","callerNumber":"+15550001","transcript":"hello"}`)
+	resp, err := unixClient(status.ListenAddress).Post("http://localhost/turn", "application/json", body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +242,8 @@ func testConfig(stateDir string) Config {
 		AgentName:         "Ada",
 		BoundNumberE164:   "+15551234567",
 		StateDir:          stateDir,
-		ListenAddr:        "127.0.0.1:0",
+		TurnSocket:        "/run/chatinfra-voice/1001/test.sock",
+		RuntimeID:         "runtime-1",
 		PromptTimeout:     time.Second,
 		ShutdownTimeout:   time.Second,
 	}

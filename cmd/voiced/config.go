@@ -3,9 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +19,8 @@ type Config struct {
 	AgentName         string
 	BoundNumberE164   string
 	StateDir          string
-	ListenAddr        string
+	TurnSocket        string
+	RuntimeID         string
 	PromptTimeout     time.Duration
 	ShutdownTimeout   time.Duration
 }
@@ -38,10 +40,7 @@ func ConfigFromEnv() (Config, error) {
 			baseURL = "http://" + host + ":" + port
 		}
 	}
-	listenAddr := firstEnv("VOICED_TURN_ADDR", "VOICE_TURN_ADDR", "TURN_ENDPOINT_ADDR")
-	if listenAddr == "" {
-		listenAddr = "127.0.0.1:0"
-	}
+
 	timeout, err := envDuration("OPENCODE_PROMPT_TIMEOUT", 0)
 	if err != nil {
 		return Config{}, err
@@ -57,7 +56,8 @@ func ConfigFromEnv() (Config, error) {
 		AgentName:         firstEnv("OPENCODE_AGENT_NAME", "AGENT_NAME", "OPENCODE_AGENT"),
 		BoundNumberE164:   firstEnv("VOICE_NUMBER_E164", "BOUND_VOICE_NUMBER_E164"),
 		StateDir:          firstEnv("VOICED_STATE_DIR", "STATE_DIR"),
-		ListenAddr:        listenAddr,
+		TurnSocket:        firstEnv("VOICED_TURN_SOCKET"),
+		RuntimeID:         firstEnv("VOICED_RUNTIME_ID"),
 		PromptTimeout:     timeout,
 		ShutdownTimeout:   shutdownTimeout,
 	}
@@ -89,11 +89,18 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.StateDir) == "" {
 		missing = append(missing, "VOICED_STATE_DIR")
 	}
-	if strings.TrimSpace(c.ListenAddr) == "" {
-		missing = append(missing, "VOICED_TURN_ADDR")
-	} else if err := validateLoopbackAddress(c.ListenAddr); err != nil {
+	if runtime.GOOS != "linux" {
+		return errors.New("Unix peer authentication requires Linux")
+	}
+	if strings.TrimSpace(c.RuntimeID) == "" {
+		missing = append(missing, "VOICED_RUNTIME_ID")
+	}
+	if c.TurnSocket == "" {
+		missing = append(missing, "VOICED_TURN_SOCKET")
+	} else if err := validateSocketPath(c.TurnSocket); err != nil {
 		return err
 	}
+
 	if len(missing) > 0 {
 		return errors.New("missing required environment: " + strings.Join(missing, ", "))
 	}
@@ -134,17 +141,9 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-func validateLoopbackAddress(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("invalid VOICED_TURN_ADDR %q: %w", addr, err)
-	}
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("VOICED_TURN_ADDR must bind a loopback address, got %q", addr)
+func validateSocketPath(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || len(path) > 107 || strings.ContainsAny(path, "\x00\r\n") {
+		return errors.New("VOICED_TURN_SOCKET must be a clean absolute Unix socket path of at most 107 bytes")
 	}
 	return nil
 }

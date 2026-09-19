@@ -2,7 +2,7 @@
 
 This module contains the `voiced` daemon: the per-agent voice bridge that turns inbound phone-call speech into prompts for a local OpenCode agent and returns the reply text the caller hears.
 
-One `voiced` process serves one agent with a bound voice number. The ChatInfra API forwards each recognized speech turn to the daemon's loopback turn endpoint; the daemon creates or reuses an OpenCode session keyed by the call identifier, submits the prompt, and answers with the spoken reply for that turn.
+One `voiced` process serves one agent with a bound voice number. The ChatInfra API forwards each recognized speech turn to the daemon's authenticated Unix socket endpoint; the daemon creates or reuses an OpenCode session keyed by the call identifier, submits the prompt, and answers with the spoken reply for that turn.
 
 ## Public mirror
 
@@ -31,7 +31,7 @@ go install github.com/chatinfra/voice/cmd/voiced@latest
 - **stderr** carries runtime logs in the standard log-line format with the `voiced:` prefix.
 - The machine-readable surface is the daemon's HTTP endpoints and its state files, not its console output.
 
-The loopback listener serves two routes: `POST /turn` accepts a JSON turn (call identifier, caller number, transcript) and returns the JSON reply text, and `GET /health` returns the same status document the daemon persists. Request bodies are capped, a missing call identifier or empty transcript is rejected, and the listener binds a loopback address only.
+The Linux Unix listener admits only kernel-authenticated UID-0 peers before parsing HTTP and serves two routes: `POST /turn` accepts a JSON turn (`runtimeId`, `agentId`, call identifier, caller number, transcript) and returns the JSON reply text, and `GET /health` returns the same status document the daemon persists. Request bodies are capped, a missing call identifier or empty transcript is rejected, and missing or mismatched runtime/agent audience is rejected before call/session work. There is no TCP listener or retry fallback.
 
 Required environment:
 
@@ -46,15 +46,19 @@ Required environment:
 | `VOICE_NUMBER_E164` | Bound voice number in E.164 form |
 | `VOICED_STATE_DIR` or `STATE_DIR` | Directory for `calls.json` and `status.json` |
 
+| `VOICED_TURN_SOCKET` | Required absolute Linux Unix socket path, at most 107 bytes |
+| `VOICED_RUNTIME_ID` | Runtime audience resolved by the API |
+
 Optional environment:
 
 | Variable | Purpose |
 | --- | --- |
-| `VOICED_TURN_ADDR` | Loopback turn endpoint address (default `127.0.0.1:0`) |
-| `OPENCODE_PROMPT_TIMEOUT` | Prompt timeout as a Go duration; unset means no timeout |
+| `OPENCODE_PROMPT_TIMEOUT` | Prompt timeout as a Go duration; default 2 minutes |
 | `VOICED_SHUTDOWN_TIMEOUT` | Graceful listener shutdown budget (default `5s`) |
 
-Startup fails with a single diagnostic naming every missing required variable, and rejects a non-loopback turn address.
+Startup rejects missing configuration, unsupported peer credentials, invalid socket paths, unexpected objects, and unsafe directory ownership/modes. Legacy TCP-only configuration cannot start a listener. The API derives `/run/chatinfra-voice/<uid>/<sha256(agentId)>.sock` from the resolved runtime account and agent; the daemon's parent must be runtime-owned mode 0700 under root-owned ancestors, and the socket is mode 0600.
+
+Readiness is published only after binding the owned endpoint and installing peer admission. Shutdown clears readiness and removes the socket only if it still has the listener's recorded identity; replacement endpoints and unrelated files are preserved. An unavailable authenticated endpoint produces the existing graceful API failure. Roll back to a secure socket-capable payload or disable voice; never restore the unauthenticated TCP transport. These source contracts do not attest an installed host or a completed migration.
 
 ## Runtime state
 
@@ -87,7 +91,14 @@ This mirror therefore exists for inspection, forks, and pull requests. Changes r
 
 1. Fork <https://github.com/chatinfra/voice.git>.
 2. Clone your fork and create a topic branch.
-3. Make changes, run `go test ./...`, and push the branch.
+3. Make changes and run the focused tests below before `go test ./...`. The Linux peer tests require Docker with UID switching and container-build support; missing capability fails the tests. The unsupported-platform CLI test also requires Node.js with WASI preview1 support and executes the real WASI daemon startup. The peer tests build a static test executable containing the production daemon into an isolated `FROM scratch` image and remove only their named container/image. Set `TMPDIR` and `GOTMPDIR` beneath a lane-owned scratch root (in the monorepo, source `bin/_super_env` and use `super_lane_scratch voice-peer-tests`).
+
+   ```bash
+   go test -json -count=1 -timeout=240s ./cmd/voiced -run '^TestUnixTurnPeerIsolationContainer$'
+   go test -json -count=1 -timeout=240s ./cmd/voiced -run '^TestUnixTurn(PeerAdmission|AudienceBinding|ListenerLifecycle)$'
+   ```
+
+4. Push the branch for review. Tests and publication do not establish live-host readiness.
 4. Open a pull request against the public mirror.
 
 Accepted public changes are reviewed and imported into canonical `go/voice` in the ChatInfra monorepo before the public mirror is synchronized again. See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
