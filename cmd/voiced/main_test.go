@@ -164,6 +164,11 @@ func TestVoicedUnsupportedPlatformFailsClosed(t *testing.T) {
  const instance = new WebAssembly.Instance(module,{wasi_snapshot_preview1:wasi.wasiImport});
  process.exitCode = wasi.start(instance);
  `
+	// Name the missing prerequisite. Without this, a host with no node on PATH fails the
+	// assertion below with two empty strings and nothing that points at the cause.
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatalf("node is required to execute the wasip1 build: %v", err)
+	}
 	cmd := exec.CommandContext(ctx, "node", "--no-warnings", "-e", script, binary, state)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
